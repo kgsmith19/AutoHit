@@ -4,6 +4,7 @@ using Emgu.CV;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Timer = System.Windows.Forms.Timer;
+using Emgu.CV.Util;
 
 namespace AutoHit
 {
@@ -16,8 +17,8 @@ namespace AutoHit
 		private Rectangle watchArea;  // Define the watched area
 		private Image<Bgr, byte> baseballTemplate;  // Store the baseball template for matching
 		private Image<Bgr, byte> prevFrame;  // Store the previous frame for motion detection
-		private int motionThreshold = 50;  // Motion detection sensitivity threshold
-		private int minWhiteArea = 500;  // Minimum white area threshold to detect the baseball
+		private int motionThreshold = 10;  // Motion detection sensitivity threshold was 50
+		private int minWhiteArea = 10;  // Minimum white area threshold to detect the baseball was 500
 
 		[DllImport("user32.dll", CharSet = CharSet.Auto, CallingConvention = CallingConvention.StdCall)]
 		public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint cButtons, uint dwExtraInfo);
@@ -133,7 +134,7 @@ namespace AutoHit
 			this.PerformLayout();
 
 			screenWatcherTimer = new Timer();
-			screenWatcherTimer.Interval = 100; // Adjust as needed
+			screenWatcherTimer.Interval = 5; // Adjust as needed was 100
 			screenWatcherTimer.Tick += ScreenWatcher_Tick;
 
 			// Load the baseball template from the uploaded image file
@@ -168,6 +169,10 @@ namespace AutoHit
 			lblStatus.Text = "Auto Hit Enabled";
 		}
 
+		// Add variables to store the last click position
+		private int lastClickX = -1;
+		private int lastClickY = -1;
+
 		private void ScreenWatcher_Tick(object sender, EventArgs e)
 		{
 			// Capture the screen
@@ -175,6 +180,20 @@ namespace AutoHit
 
 			// Display the captured screen in the PictureBox (for visualization)
 			pictureBox.Image = screenCapture;  // Display the captured screen
+
+			// If clicks are not allowed, continue to display the red dot at the last known position
+			if (!checkBoxAllowClicks.Checked && lastClickX != -1 && lastClickY != -1)
+			{
+				using (Graphics g = Graphics.FromImage(screenCapture))
+				{
+					// Redraw the red dot at the last click location
+					g.FillEllipse(Brushes.Red, lastClickX - 5, lastClickY - 5, 10, 10);
+				}
+
+				// Update the PictureBox with the updated screen
+				pictureBox.Image = screenCapture;
+				pictureBox.Refresh();
+			}
 
 			if (isAutoHitEnabled && checkBoxAllowClicks.Checked)
 			{
@@ -194,8 +213,8 @@ namespace AutoHit
 					// Calculate the difference between the grayscale frames
 					Image<Gray, byte> motion = grayPrevFrame.AbsDiff(grayCurrentFrame);
 
-					// Threshold the motion to remove noise
-					motion = motion.ThresholdBinary(new Gray(30), new Gray(255));
+					// Threshold the motion to remove noise and detect earlier
+					motion = motion.ThresholdBinary(new Gray(20), new Gray(255)); // More sensitive motion detection
 
 					// Check if motion is detected by calculating the non-zero pixels
 					int motionArea = CvInvoke.CountNonZero(motion);
@@ -213,21 +232,88 @@ namespace AutoHit
 						// Detect if the white area matches the expected baseball size
 						if (CvInvoke.CountNonZero(whiteMask) > minWhiteArea)
 						{
-							// Baseball detected! Simulate two clicks at the matched location
-							SimulateMouseClick(watchArea.X + 100, watchArea.Y + 100);  // You can adjust the click location
-							clickCount++;
-							lblClickCount.Text = $"Number of clicks: {clickCount}";
+							// Step 3: Find the bounding box of the white ball
+							using (VectorOfVectorOfPoint contours = new VectorOfVectorOfPoint())
+							{
+								CvInvoke.FindContours(whiteMask, contours, null, RetrType.External, ChainApproxMethod.ChainApproxSimple);
 
-							// Uncheck the allow clicks checkbox after the click
-							checkBoxAllowClicks.Checked = false;
+								if (contours.Size > 0)
+								{
+									// Get the largest contour, assuming it's the ball
+									int largestContourIndex = 0;
+									double maxArea = 0;
+
+									for (int i = 0; i < contours.Size; i++)
+									{
+										double area = CvInvoke.ContourArea(contours[i]);
+										if (area > maxArea)
+										{
+											largestContourIndex = i;
+											maxArea = area;
+										}
+									}
+
+									// Get the bounding box of the largest contour (the white ball)
+									Rectangle boundingBox = CvInvoke.BoundingRectangle(contours[largestContourIndex]);
+
+									// Calculate the center of the bounding box
+									int centerX = boundingBox.X + boundingBox.Width / 2;
+									int centerY = boundingBox.Y + boundingBox.Height / 2;
+
+									// Convert to absolute screen position relative to the watched area
+									int absoluteX = watchArea.X + centerX;
+									int absoluteY = watchArea.Y + centerY;
+
+									// Ensure the click location is within bounds of the croppedScreen
+									if (centerX >= 0 && centerX < croppedScreen.Width && centerY >= 0 && centerY < croppedScreen.Height)
+									{
+										// Simulate the mouse click at the center of the ball
+										SimulateMouseClick(absoluteX, absoluteY);   // Now clicks directly on the ball
+										clickCount++;
+										lblClickCount.Text = $"Number of clicks: {clickCount}";
+
+										// Store the last click position
+										lastClickX = absoluteX;
+										lastClickY = absoluteY;
+
+										// Draw a red dot on the cropped screen
+										using (Graphics g = Graphics.FromImage(croppedScreen))
+										{
+											// Draw a red circle at the click location on the croppedScreen
+											g.FillEllipse(Brushes.Red, centerX - 5, centerY - 5, 50, 50);  // Red dot of size 10x10
+										}
+
+										// Now we copy the cropped screen back into the main screen capture
+										using (Graphics g = Graphics.FromImage(screenCapture))
+										{
+											g.DrawImage(croppedScreen, watchArea);  // Place the modified cropped image back in the original screen capture
+										}
+
+										// Uncheck the allow clicks checkbox after the click
+										checkBoxAllowClicks.Checked = false;
+									}
+									else
+									{
+										Console.WriteLine("Click location is out of bounds.");
+									}
+								}
+							}
 						}
 					}
 				}
 
 				// Store the current frame as the previous frame for the next iteration
 				prevFrame = currentFrame.Copy();
+
+				// Force PictureBox to update with the screen capture that includes the red dot
+				pictureBox.Image = screenCapture;
+				pictureBox.Refresh();  // Force refresh to ensure the dot is visible
 			}
 		}
+
+
+
+
 
 
 
@@ -352,7 +438,7 @@ namespace AutoHit
 		{
 			Cursor.Position = new Point(x, y);
 			mouse_event(MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_LEFTUP, (uint)x, (uint)y, 0, 0);
-			System.Threading.Thread.Sleep(100); // Small delay for second click
+			System.Threading.Thread.Sleep(50); // Small delay for second click
 			mouse_event(MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_LEFTUP, (uint)x, (uint)y, 0, 0);
 		}
 
