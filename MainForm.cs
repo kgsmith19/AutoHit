@@ -2,9 +2,8 @@ using Emgu.CV.CvEnum;
 using Emgu.CV.Structure;
 using Emgu.CV;
 using System.Runtime.InteropServices;
-using Timer = System.Windows.Forms.Timer;
-using Emgu.CV.Util;
 using System.Windows.Forms;
+using Timer = System.Windows.Forms.Timer;
 
 namespace AutoHit
 {
@@ -16,6 +15,9 @@ namespace AutoHit
 		private Timer screenWatcherTimer;
 		private Rectangle watchArea;  // Define the watched area
 		private Image<Bgr, byte> baseballTemplate;  // Store the baseball template for matching
+		private Image<Bgr, byte> prevFrame;  // Store the previous frame for motion detection
+		private int motionThreshold = 50;  // Motion detection sensitivity threshold
+		private int minWhiteArea = 500;  // Minimum white area threshold to detect the baseball
 
 		[DllImport("user32.dll", CharSet = CharSet.Auto, CallingConvention = CallingConvention.StdCall)]
 		public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint cButtons, uint dwExtraInfo);
@@ -179,14 +181,71 @@ namespace AutoHit
 				// Crop the screen capture to the watched area
 				Bitmap croppedScreen = CropBitmap(screenCapture, watchArea);
 
-				// Convert Bitmap to Mat and then to Image<Bgr, byte>
-				Mat screenMat = BitmapToMat(croppedScreen);
-				Image<Bgr, byte> screenImage = screenMat.ToImage<Bgr, byte>();  // Corrected conversion
+				// Convert Bitmap to Image<Bgr, byte> for Emgu CV processing
+				Image<Bgr, byte> currentFrame = BitmapToImage(croppedScreen);
 
-				// Detect the baseball using template matching
-				DetectBaseballWithTemplateMatching(screenImage);
+				// Step 1: Detect motion
+				if (prevFrame != null)
+				{
+					// Convert both prevFrame and currentFrame to grayscale
+					Image<Gray, byte> grayPrevFrame = prevFrame.Convert<Gray, byte>();
+					Image<Gray, byte> grayCurrentFrame = currentFrame.Convert<Gray, byte>();
+
+					// Calculate the difference between the grayscale frames
+					Image<Gray, byte> motion = grayPrevFrame.AbsDiff(grayCurrentFrame);
+
+					// Threshold the motion to remove noise
+					motion = motion.ThresholdBinary(new Gray(30), new Gray(255));
+
+					// Check if motion is detected by calculating the non-zero pixels
+					int motionArea = CvInvoke.CountNonZero(motion);
+
+					if (motionArea > motionThreshold)
+					{
+						// Step 2: Apply color filtering (white ball detection)
+						Image<Hsv, byte> hsvImage = currentFrame.Convert<Hsv, byte>();
+						Image<Gray, byte> whiteMask = hsvImage.InRange(new Hsv(0, 0, 180), new Hsv(180, 30, 255));  // Filter for white
+
+						// Filter out small areas (noise)
+						CvInvoke.Erode(whiteMask, whiteMask, null, new System.Drawing.Point(-1, -1), 2, BorderType.Default, new MCvScalar(0));
+						CvInvoke.Dilate(whiteMask, whiteMask, null, new System.Drawing.Point(-1, -1), 2, BorderType.Default, new MCvScalar(0));
+
+						// Detect if the white area matches the expected baseball size
+						if (CvInvoke.CountNonZero(whiteMask) > minWhiteArea)
+						{
+							// Baseball detected! Simulate two clicks at the matched location
+							SimulateMouseClick(watchArea.X + 100, watchArea.Y + 100);  // You can adjust the click location
+							clickCount++;
+							lblClickCount.Text = $"Number of clicks: {clickCount}";
+
+							// Uncheck the allow clicks checkbox after the click
+							checkBoxAllowClicks.Checked = false;
+						}
+					}
+				}
+
+				// Store the current frame as the previous frame for the next iteration
+				prevFrame = currentFrame.Copy();
 			}
 		}
+
+
+
+		private Image<Bgr, byte> BitmapToImage(Bitmap bitmap)
+		{
+			// Convert Bitmap to Mat (matrix format used by Emgu CV)
+			Mat mat = new Mat();
+			bitmap.Save("temp.bmp");  // Save the Bitmap temporarily
+			mat = CvInvoke.Imread("temp.bmp", Emgu.CV.CvEnum.ImreadModes.Color);  // Read the temporary file into a Mat
+
+			// Convert Mat to Image<Bgr, byte>
+			Image<Bgr, byte> image = mat.ToImage<Bgr, byte>();
+
+			return image;
+		}
+
+
+
 
 		// Method to crop the bitmap to the watched area
 		private Bitmap CropBitmap(Bitmap source, Rectangle section)
@@ -201,33 +260,60 @@ namespace AutoHit
 		}
 
 		// Method to detect the baseball using template matching
-		private void DetectBaseballWithTemplateMatching(Image<Bgr, byte> screenImage)
+		private void DetectBaseballWithTemplateMatching(Image<Bgr, byte> screenImage, Image<Gray, byte> whiteMask)
 		{
+			// Ensure the template and screen image are valid and initialized
+			if (baseballTemplate == null || baseballTemplate.Width == 0 || baseballTemplate.Height == 0)
+			{
+				MessageBox.Show("Error: Baseball template is not properly initialized.");
+				return;
+			}
+
+			if (screenImage == null || screenImage.Width == 0 || screenImage.Height == 0)
+			{
+				MessageBox.Show("Error: Screen image is not valid.");
+				return;
+			}
+
+			if (screenImage.Width < baseballTemplate.Width || screenImage.Height < baseballTemplate.Height)
+			{
+				MessageBox.Show("Error: Template is larger than the screen image, cannot perform template matching.");
+				return;
+			}
+
+			// Resize template to fit within the screenImage if necessary
 			Image<Bgr, byte> resizedTemplate = baseballTemplate.Resize(screenImage.Width, screenImage.Height, Emgu.CV.CvEnum.Inter.Linear);
 
-			// Perform template matching to find the baseball
-			using (Image<Gray, float> result = screenImage.MatchTemplate(resizedTemplate, TemplateMatchingType.CcoeffNormed))
+			try
 			{
-				// Get the minimum and maximum values and locations from the result
-				double[] minVal, maxVal;
-				Point[] minLoc, maxLoc;
-				result.MinMax(out minVal, out maxVal, out minLoc, out maxLoc);
-
-				// Set a threshold for matching confidence (adjust as needed)
-				if (maxVal[0] >= 0.8)  // Confidence threshold
+				// Perform template matching using the masked image
+				using (Image<Gray, float> result = screenImage.MatchTemplate(resizedTemplate, TemplateMatchingType.CcoeffNormed))
 				{
-					// Baseball detected! Simulate two clicks at the matched location
-					SimulateMouseClick(maxLoc[0].X + watchArea.X, maxLoc[0].Y + watchArea.Y);
+					double[] minVal, maxVal;
+					Point[] minLoc, maxLoc;
+					result.MinMax(out minVal, out maxVal, out minLoc, out maxLoc);
 
-					// Increment click count and update the label
-					clickCount++;
-					lblClickCount.Text = $"Number of clicks: {clickCount}";
+					// Set a threshold for matching confidence (adjust as needed)
+					if (maxVal[0] >= 0.8)  // Confidence threshold
+					{
+						// Baseball detected! Simulate two clicks at the matched location
+						SimulateMouseClick(maxLoc[0].X + watchArea.X, maxLoc[0].Y + watchArea.Y);
 
-					// Uncheck the allow clicks checkbox after the click
-					checkBoxAllowClicks.Checked = false;
+						// Increment click count and update the label
+						clickCount++;
+						lblClickCount.Text = $"Number of clicks: {clickCount}";
+
+						// Uncheck the allow clicks checkbox after the click
+						checkBoxAllowClicks.Checked = false;
+					}
 				}
 			}
+			catch (Exception ex)
+			{
+				MessageBox.Show($"Error during template matching: {ex.Message}");
+			}
 		}
+
 
 		// Helper method to convert Bitmap to Mat
 		private Mat BitmapToMat(Bitmap bitmap)
