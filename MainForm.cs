@@ -1,6 +1,7 @@
 using Emgu.CV.CvEnum;
 using Emgu.CV.Structure;
 using Emgu.CV;
+using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Timer = System.Windows.Forms.Timer;
@@ -8,6 +9,12 @@ using Emgu.CV.Util;
 
 namespace AutoHit
 {
+	public enum HitMode
+	{
+		AutoHit,
+		SemiAutoHit
+	}
+
 	public partial class MainForm : Form
 	{
 		private bool isWatching = false;
@@ -15,16 +22,22 @@ namespace AutoHit
 		private int clickCount = 0;  // Counter for clicks
 		private Timer screenWatcherTimer;
 		private Rectangle watchArea;  // Define the watched area
-		private Image<Bgr, byte> baseballTemplate;  // Store the baseball template for matching
-		private Image<Bgr, byte> prevFrame;  // Store the previous frame for motion detection
-		private int motionThreshold = 10;  // Motion detection sensitivity threshold was 50
-		private int minWhiteArea = 10;  // Minimum white area threshold to detect the baseball was 500
+		private int minWhiteArea = 10;  // Minimum white area threshold to detect the baseball
+		private int lastClickX = -1;
+		private int lastClickY = -1;
 
 		[DllImport("user32.dll", CharSet = CharSet.Auto, CallingConvention = CallingConvention.StdCall)]
 		public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint cButtons, uint dwExtraInfo);
 
 		private const int MOUSEEVENTF_LEFTDOWN = 0x02;
 		private const int MOUSEEVENTF_LEFTUP = 0x04;
+
+		private Label lblStatus;
+		private Button btnShowScreen;
+		private Button btnStartStop;
+		private PictureBox pictureBox;
+		private Label lblPictureTracking;
+		private Label lblClickCount;
 
 		public MainForm()
 		{
@@ -34,12 +47,14 @@ namespace AutoHit
 		private void InitializeComponent()
 		{
 			this.lblStatus = new System.Windows.Forms.Label();
-			this.btnToggleWatcher = new System.Windows.Forms.Button();
-			this.btnStartAutoHit = new System.Windows.Forms.Button();
+			this.btnShowScreen = new System.Windows.Forms.Button();
+			this.btnStartStop = new System.Windows.Forms.Button();
 			this.pictureBox = new System.Windows.Forms.PictureBox();
 			this.lblPictureTracking = new System.Windows.Forms.Label();
-			this.lblClickCount = new System.Windows.Forms.Label();  // Label for click count
-			this.checkBoxAllowClicks = new System.Windows.Forms.CheckBox();  // Checkbox for allowing clicks
+			this.lblClickCount = new System.Windows.Forms.Label();
+
+			((System.ComponentModel.ISupportInitialize)(this.pictureBox)).BeginInit();
+			this.SuspendLayout();
 
 			// 
 			// lblStatus
@@ -52,33 +67,34 @@ namespace AutoHit
 			this.lblStatus.Text = "Not watching.";
 
 			// 
-			// btnToggleWatcher
+			// btnShowScreen
 			// 
-			this.btnToggleWatcher.Location = new System.Drawing.Point(12, 50);
-			this.btnToggleWatcher.Name = "btnToggleWatcher";
-			this.btnToggleWatcher.Size = new System.Drawing.Size(150, 23);
-			this.btnToggleWatcher.TabIndex = 1;
-			this.btnToggleWatcher.Text = "Toggle Screen Capture";
-			this.btnToggleWatcher.UseVisualStyleBackColor = true;
-			this.btnToggleWatcher.Click += new System.EventHandler(this.btnToggleWatcher_Click);
+			this.btnShowScreen.Location = new System.Drawing.Point(12, 50);
+			this.btnShowScreen.Name = "btnShowScreen";
+			this.btnShowScreen.Size = new System.Drawing.Size(150, 23);
+			this.btnShowScreen.TabIndex = 1;
+			this.btnShowScreen.Text = "Show Screen";
+			this.btnShowScreen.UseVisualStyleBackColor = true;
+			this.btnShowScreen.Click += new System.EventHandler(this.btnShowScreen_Click);
 
 			// 
-			// btnStartAutoHit
+			// btnStartStop
 			// 
-			this.btnStartAutoHit.Location = new System.Drawing.Point(12, 90);
-			this.btnStartAutoHit.Name = "btnStartAutoHit";
-			this.btnStartAutoHit.Size = new System.Drawing.Size(150, 23);
-			this.btnStartAutoHit.TabIndex = 2;
-			this.btnStartAutoHit.Text = "Start Auto Hit";
-			this.btnStartAutoHit.UseVisualStyleBackColor = true;
-			this.btnStartAutoHit.Click += new System.EventHandler(this.btnStartAutoHit_Click);
+			this.btnStartStop.Location = new System.Drawing.Point(12, 90);
+			this.btnStartStop.Name = "btnStartStop";
+			this.btnStartStop.Size = new System.Drawing.Size(150, 23);
+			this.btnStartStop.TabIndex = 2;
+			this.btnStartStop.Text = "Start";
+			this.btnStartStop.UseVisualStyleBackColor = true;
+			this.btnStartStop.Enabled = false;
+			this.btnStartStop.Click += new System.EventHandler(this.btnStartStop_Click);
 
 			// 
 			// pictureBox
 			// 
 			this.pictureBox.Location = new System.Drawing.Point(200, 50);
 			this.pictureBox.Name = "pictureBox";
-			this.pictureBox.Size = new System.Drawing.Size(400, 300);  // Adjust size based on your needs
+			this.pictureBox.Size = new System.Drawing.Size(400, 300);
 			this.pictureBox.SizeMode = System.Windows.Forms.PictureBoxSizeMode.StretchImage;
 			this.pictureBox.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle;
 			this.pictureBox.TabIndex = 3;
@@ -102,352 +118,175 @@ namespace AutoHit
 			this.lblClickCount.Size = new System.Drawing.Size(85, 13);
 			this.lblClickCount.TabIndex = 5;
 			this.lblClickCount.Text = "Number of clicks: 0";
+			this.lblClickCount.Enabled = false;
 
-			// 
-			// checkBoxAllowClicks
-			// 
-			this.checkBoxAllowClicks.AutoSize = true;
-			this.checkBoxAllowClicks.Location = new System.Drawing.Point(12, 160);
-			this.checkBoxAllowClicks.Name = "checkBoxAllowClicks";
-			this.checkBoxAllowClicks.Size = new System.Drawing.Size(80, 17);
-			this.checkBoxAllowClicks.TabIndex = 6;
-			this.checkBoxAllowClicks.Text = "Allow Clicks";
-			this.checkBoxAllowClicks.Checked = true;  // Default to checked
-			this.checkBoxAllowClicks.UseVisualStyleBackColor = true;
+			this.Controls.Add(this.lblStatus);
+			this.Controls.Add(this.btnShowScreen);
+			this.Controls.Add(this.btnStartStop);
+			this.Controls.Add(this.pictureBox);
+			this.Controls.Add(this.lblPictureTracking);
+			this.Controls.Add(this.lblClickCount);
 
-			// 
-			// MainForm
-			// 
 			this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
 			this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
 			this.ClientSize = new System.Drawing.Size(630, 400);
-			this.Controls.Add(this.lblStatus);
-			this.Controls.Add(this.btnToggleWatcher);
-			this.Controls.Add(this.btnStartAutoHit);
-			this.Controls.Add(this.pictureBox);
-			this.Controls.Add(this.lblPictureTracking);
-			this.Controls.Add(this.lblClickCount);  // Add click count label to form
-			this.Controls.Add(this.checkBoxAllowClicks);  // Add allow clicks checkbox to form
 			this.Name = "MainForm";
 			this.Text = "Screen Watcher";
-			this.ResumeLayout(false);
-			this.PerformLayout();
 
 			screenWatcherTimer = new Timer();
-			screenWatcherTimer.Interval = 5; // Adjust as needed was 100
+			screenWatcherTimer.Interval = 5; // Adjust as needed
 			screenWatcherTimer.Tick += ScreenWatcher_Tick;
 
-			// Load the baseball template from the uploaded image file
-			baseballTemplate = new Image<Bgr, byte>(@"C:\\Test.PNG");
-
-			// Define the watched area (smaller region within the screen)
 			Rectangle bounds = Screen.PrimaryScreen.Bounds;
-			watchArea = new Rectangle(bounds.Width / 2 - 150, bounds.Height / 2 - 150, 300, 300);  // Watched area
+			watchArea = new Rectangle(bounds.Width / 2 - 150, bounds.Height / 2 - 150, 300, 300);
+
+			((System.ComponentModel.ISupportInitialize)(this.pictureBox)).EndInit();
+			this.ResumeLayout(false);
+			this.PerformLayout();
 		}
 
-		// Button to toggle screen capture (for preview only, no auto hit)
-		private void btnToggleWatcher_Click(object sender, EventArgs e)
+		private void btnShowScreen_Click(object sender, EventArgs e)
 		{
 			isWatching = !isWatching;
 			if (isWatching)
 			{
+				btnShowScreen.Text = "Hide Screen";
+				btnStartStop.Enabled = true;  // Enable the Start/Stop button
+				lblClickCount.Enabled = true;
 				screenWatcherTimer.Start();
 				lblStatus.Text = "Watching screen... (Preview Mode)";
 			}
 			else
 			{
+				btnShowScreen.Text = "Show Screen";
+				btnStartStop.Enabled = false;
+				lblClickCount.Enabled = false;
 				screenWatcherTimer.Stop();
 				lblStatus.Text = "Not watching.";
 			}
 		}
 
-		// Button to start auto hit (enables mouse events)
-		private void btnStartAutoHit_Click(object sender, EventArgs e)
+		private void btnStartStop_Click(object sender, EventArgs e)
 		{
-			isAutoHitEnabled = true;
-			checkBoxAllowClicks.Checked = true;  // Ensure allow clicks is checked when auto-hit starts
-			lblStatus.Text = "Auto Hit Enabled";
+			isAutoHitEnabled = !isAutoHitEnabled;
+			if (isAutoHitEnabled)
+			{
+				btnStartStop.Text = "Stop";
+				lblStatus.Text = "AutoHit/SemiAutoHit Enabled";
+			}
+			else
+			{
+				btnStartStop.Text = "Start";
+				lblStatus.Text = "AutoHit/SemiAutoHit Disabled";
+			}
 		}
-
-		// Add variables to store the last click position
-		private int lastClickX = -1;
-		private int lastClickY = -1;
 
 		private void ScreenWatcher_Tick(object sender, EventArgs e)
 		{
-			// Capture the screen
 			Bitmap screenCapture = CaptureScreen();
+			pictureBox.Image = screenCapture;
 
-			// Display the captured screen in the PictureBox (for visualization)
-			pictureBox.Image = screenCapture;  // Display the captured screen
-
-			// If clicks are not allowed, continue to display the red dot at the last known position
-			if (!checkBoxAllowClicks.Checked && lastClickX != -1 && lastClickY != -1)
+			if (lastClickX != -1 && lastClickY != -1)
 			{
 				using (Graphics g = Graphics.FromImage(screenCapture))
 				{
-					// Redraw the red dot at the last click location
 					g.FillEllipse(Brushes.Red, lastClickX - 5, lastClickY - 5, 10, 10);
 				}
 
-				// Update the PictureBox with the updated screen
 				pictureBox.Image = screenCapture;
 				pictureBox.Refresh();
 			}
 
-			if (isAutoHitEnabled && checkBoxAllowClicks.Checked)
+			if (isAutoHitEnabled)
 			{
-				// Crop the screen capture to the watched area
-				Bitmap croppedScreen = CropBitmap(screenCapture, watchArea);
+				TrackBallAndClick();
+			}
+		}
 
-				// Convert Bitmap to Image<Bgr, byte> for Emgu CV processing
-				Image<Bgr, byte> currentFrame = BitmapToImage(croppedScreen);
+		private void TrackBallAndClick()
+		{
+			Bitmap screenCapture = CaptureScreen();  // Capture the screen
+			Bitmap croppedScreen = CropBitmap(screenCapture, watchArea);  // Crop to the watched area
+			Image<Bgr, byte> currentFrame = BitmapToImage(croppedScreen);  // Convert to image for processing
 
-				// Step 1: Detect motion
-				if (prevFrame != null)
+			// Convert the image to HSV color space and create a mask for the white ball
+			Image<Hsv, byte> hsvImage = currentFrame.Convert<Hsv, byte>();
+			Image<Gray, byte> whiteMask = hsvImage.InRange(new Hsv(0, 0, 180), new Hsv(180, 30, 255));
+
+			// Apply erosion and dilation to filter noise and refine the ball detection
+			CvInvoke.Erode(whiteMask, whiteMask, null, new System.Drawing.Point(-1, -1), 2, BorderType.Default, new MCvScalar(0));
+			CvInvoke.Dilate(whiteMask, whiteMask, null, new System.Drawing.Point(-1, -1), 2, BorderType.Default, new MCvScalar(0));
+
+			// Check if any large enough white area is detected, which could be the ball
+			if (CvInvoke.CountNonZero(whiteMask) > minWhiteArea)
+			{
+				using (VectorOfVectorOfPoint contours = new VectorOfVectorOfPoint())
 				{
-					// Convert both prevFrame and currentFrame to grayscale
-					Image<Gray, byte> grayPrevFrame = prevFrame.Convert<Gray, byte>();
-					Image<Gray, byte> grayCurrentFrame = currentFrame.Convert<Gray, byte>();
+					// Find contours in the white mask
+					CvInvoke.FindContours(whiteMask, contours, null, RetrType.External, ChainApproxMethod.ChainApproxSimple);
 
-					// Calculate the difference between the grayscale frames
-					Image<Gray, byte> motion = grayPrevFrame.AbsDiff(grayCurrentFrame);
-
-					// Threshold the motion to remove noise and detect earlier
-					motion = motion.ThresholdBinary(new Gray(20), new Gray(255)); // More sensitive motion detection
-
-					// Check if motion is detected by calculating the non-zero pixels
-					int motionArea = CvInvoke.CountNonZero(motion);
-
-					if (motionArea > motionThreshold)
+					if (contours.Size > 0)
 					{
-						// Step 2: Apply color filtering (white ball detection)
-						Image<Hsv, byte> hsvImage = currentFrame.Convert<Hsv, byte>();
-						Image<Gray, byte> whiteMask = hsvImage.InRange(new Hsv(0, 0, 180), new Hsv(180, 30, 255));  // Filter for white
+						// Get the bounding box of the first contour (largest white area)
+						Rectangle boundingBox = CvInvoke.BoundingRectangle(contours[0]);
+						int centerX = boundingBox.X + boundingBox.Width / 2;
+						int centerY = boundingBox.Y + boundingBox.Height / 2;
+						int absoluteX = watchArea.X + centerX;
+						int absoluteY = watchArea.Y + centerY;
 
-						// Filter out small areas (noise)
-						CvInvoke.Erode(whiteMask, whiteMask, null, new System.Drawing.Point(-1, -1), 2, BorderType.Default, new MCvScalar(0));
-						CvInvoke.Dilate(whiteMask, whiteMask, null, new System.Drawing.Point(-1, -1), 2, BorderType.Default, new MCvScalar(0));
+						// Simulate a click at the detected ball position
+						SimulateMouseClick(absoluteX, absoluteY);
+						lastClickX = absoluteX;
+						lastClickY = absoluteY;
 
-						// Detect if the white area matches the expected baseball size
-						if (CvInvoke.CountNonZero(whiteMask) > minWhiteArea)
-						{
-							// Step 3: Find the bounding box of the white ball
-							using (VectorOfVectorOfPoint contours = new VectorOfVectorOfPoint())
-							{
-								CvInvoke.FindContours(whiteMask, contours, null, RetrType.External, ChainApproxMethod.ChainApproxSimple);
-
-								if (contours.Size > 0)
-								{
-									// Get the largest contour, assuming it's the ball
-									int largestContourIndex = 0;
-									double maxArea = 0;
-
-									for (int i = 0; i < contours.Size; i++)
-									{
-										double area = CvInvoke.ContourArea(contours[i]);
-										if (area > maxArea)
-										{
-											largestContourIndex = i;
-											maxArea = area;
-										}
-									}
-
-									// Get the bounding box of the largest contour (the white ball)
-									Rectangle boundingBox = CvInvoke.BoundingRectangle(contours[largestContourIndex]);
-
-									// Calculate the center of the bounding box
-									int centerX = boundingBox.X + boundingBox.Width / 2;
-									int centerY = boundingBox.Y + boundingBox.Height / 2;
-
-									// Convert to absolute screen position relative to the watched area
-									int absoluteX = watchArea.X + centerX;
-									int absoluteY = watchArea.Y + centerY;
-
-									// Ensure the click location is within bounds of the croppedScreen
-									if (centerX >= 0 && centerX < croppedScreen.Width && centerY >= 0 && centerY < croppedScreen.Height)
-									{
-										// Simulate the mouse click at the center of the ball
-										SimulateMouseClick(absoluteX, absoluteY);   // Now clicks directly on the ball
-										clickCount++;
-										lblClickCount.Text = $"Number of clicks: {clickCount}";
-
-										// Store the last click position
-										lastClickX = absoluteX;
-										lastClickY = absoluteY;
-
-										// Draw a red dot on the cropped screen
-										using (Graphics g = Graphics.FromImage(croppedScreen))
-										{
-											// Draw a red circle at the click location on the croppedScreen
-											g.FillEllipse(Brushes.Red, centerX - 5, centerY - 5, 50, 50);  // Red dot of size 10x10
-										}
-
-										// Now we copy the cropped screen back into the main screen capture
-										using (Graphics g = Graphics.FromImage(screenCapture))
-										{
-											g.DrawImage(croppedScreen, watchArea);  // Place the modified cropped image back in the original screen capture
-										}
-
-										// Uncheck the allow clicks checkbox after the click
-										checkBoxAllowClicks.Checked = false;
-									}
-									else
-									{
-										Console.WriteLine("Click location is out of bounds.");
-									}
-								}
-							}
-						}
-					}
-				}
-
-				// Store the current frame as the previous frame for the next iteration
-				prevFrame = currentFrame.Copy();
-
-				// Force PictureBox to update with the screen capture that includes the red dot
-				pictureBox.Image = screenCapture;
-				pictureBox.Refresh();  // Force refresh to ensure the dot is visible
-			}
-		}
-
-
-
-
-
-
-
-		private Image<Bgr, byte> BitmapToImage(Bitmap bitmap)
-		{
-			// Convert Bitmap to Mat (matrix format used by Emgu CV)
-			Mat mat = new Mat();
-			bitmap.Save("temp.bmp");  // Save the Bitmap temporarily
-			mat = CvInvoke.Imread("temp.bmp", Emgu.CV.CvEnum.ImreadModes.Color);  // Read the temporary file into a Mat
-
-			// Convert Mat to Image<Bgr, byte>
-			Image<Bgr, byte> image = mat.ToImage<Bgr, byte>();
-
-			return image;
-		}
-
-
-
-
-		// Method to crop the bitmap to the watched area
-		private Bitmap CropBitmap(Bitmap source, Rectangle section)
-		{
-			Bitmap croppedBitmap = new Bitmap(section.Width, section.Height);
-			using (Graphics g = Graphics.FromImage(croppedBitmap))
-			{
-				g.DrawImage(source, new Rectangle(0, 0, croppedBitmap.Width, croppedBitmap.Height),
-					section, GraphicsUnit.Pixel);
-			}
-			return croppedBitmap;
-		}
-
-		// Method to detect the baseball using template matching
-		private void DetectBaseballWithTemplateMatching(Image<Bgr, byte> screenImage, Image<Gray, byte> whiteMask)
-		{
-			// Ensure the template and screen image are valid and initialized
-			if (baseballTemplate == null || baseballTemplate.Width == 0 || baseballTemplate.Height == 0)
-			{
-				MessageBox.Show("Error: Baseball template is not properly initialized.");
-				return;
-			}
-
-			if (screenImage == null || screenImage.Width == 0 || screenImage.Height == 0)
-			{
-				MessageBox.Show("Error: Screen image is not valid.");
-				return;
-			}
-
-			if (screenImage.Width < baseballTemplate.Width || screenImage.Height < baseballTemplate.Height)
-			{
-				MessageBox.Show("Error: Template is larger than the screen image, cannot perform template matching.");
-				return;
-			}
-
-			// Resize template to fit within the screenImage if necessary
-			Image<Bgr, byte> resizedTemplate = baseballTemplate.Resize(screenImage.Width, screenImage.Height, Emgu.CV.CvEnum.Inter.Linear);
-
-			try
-			{
-				// Perform template matching using the masked image
-				using (Image<Gray, float> result = screenImage.MatchTemplate(resizedTemplate, TemplateMatchingType.CcoeffNormed))
-				{
-					double[] minVal, maxVal;
-					Point[] minLoc, maxLoc;
-					result.MinMax(out minVal, out maxVal, out minLoc, out maxLoc);
-
-					// Set a threshold for matching confidence (adjust as needed)
-					if (maxVal[0] >= 0.8)  // Confidence threshold
-					{
-						// Baseball detected! Simulate two clicks at the matched location
-						SimulateMouseClick(maxLoc[0].X + watchArea.X, maxLoc[0].Y + watchArea.Y);
-
-						// Increment click count and update the label
+						// Update click count for UI display
 						clickCount++;
 						lblClickCount.Text = $"Number of clicks: {clickCount}";
-
-						// Uncheck the allow clicks checkbox after the click
-						checkBoxAllowClicks.Checked = false;
 					}
 				}
 			}
-			catch (Exception ex)
-			{
-				MessageBox.Show($"Error during template matching: {ex.Message}");
-			}
 		}
 
-
-		// Helper method to convert Bitmap to Mat
-		private Mat BitmapToMat(Bitmap bitmap)
+		private Image<Bgr, byte> BitmapToImage(Bitmap bitmap)
 		{
 			Mat mat = new Mat();
 			bitmap.Save("temp.bmp");
 			mat = CvInvoke.Imread("temp.bmp", Emgu.CV.CvEnum.ImreadModes.Color);
-			return mat;
+			Image<Bgr, byte> image = mat.ToImage<Bgr, byte>();
+			return image;
 		}
 
 		private Bitmap CaptureScreen()
 		{
-			// Define the area of the screen you want to capture (full screen in this case)
 			Rectangle bounds = Screen.PrimaryScreen.Bounds;
-
-			// Create a Bitmap with the same size as the screen
 			Bitmap bitmap = new Bitmap(bounds.Width, bounds.Height);
 
 			using (Graphics g = Graphics.FromImage(bitmap))
 			{
-				// Capture the screen content into the bitmap
 				g.CopyFromScreen(Point.Empty, Point.Empty, bounds.Size);
-
-				// Draw a red border to visually indicate the watched area
-				Pen borderPen = new Pen(Color.Red, 5); // Red border with 5-pixel thickness
-
-				// Draw the border around the watched area
+				Pen borderPen = new Pen(Color.Red, 5);
 				g.DrawRectangle(borderPen, watchArea);
 			}
 
 			return bitmap;
 		}
 
-		// Method to simulate mouse clicks
+		private Bitmap CropBitmap(Bitmap source, Rectangle section)
+		{
+			Bitmap croppedBitmap = new Bitmap(section.Width, section.Height);
+			using (Graphics g = Graphics.FromImage(croppedBitmap))
+			{
+				g.DrawImage(source, new Rectangle(0, 0, croppedBitmap.Width, croppedBitmap.Height), section, GraphicsUnit.Pixel);
+			}
+			return croppedBitmap;
+		}
+
 		private void SimulateMouseClick(int x, int y)
 		{
 			Cursor.Position = new Point(x, y);
 			mouse_event(MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_LEFTUP, (uint)x, (uint)y, 0, 0);
-			System.Threading.Thread.Sleep(50); // Small delay for second click
+			System.Threading.Thread.Sleep(50);
 			mouse_event(MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_LEFTUP, (uint)x, (uint)y, 0, 0);
 		}
-
-		private System.Windows.Forms.Label lblStatus;
-		private System.Windows.Forms.Button btnToggleWatcher;
-		private System.Windows.Forms.Button btnStartAutoHit;
-		private System.Windows.Forms.PictureBox pictureBox;
-		private System.Windows.Forms.Label lblPictureTracking;
-		private System.Windows.Forms.Label lblClickCount;  // Label for displaying the number of clicks
-		private System.Windows.Forms.CheckBox checkBoxAllowClicks;  // Checkbox for allowing clicks
 	}
 }
