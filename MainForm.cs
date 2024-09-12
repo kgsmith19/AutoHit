@@ -16,8 +16,8 @@ namespace AutoHit
 		private Timer screenWatcherTimer;
 		private Rectangle watchArea;  // Define the watched areas
 		private Image<Bgr, byte> prevFrame;  // Store the previous frame for motion detection
-		private int motionThreshold = 10;  // Motion detection sensitivity threshold
-		private int minWhiteArea = 10;  // Minimum white area threshold to detect the baseball
+		private int motionThreshold = 1;  // Motion detection sensitivity threshold
+		private int minWhiteArea = 1;  // Minimum white area threshold to detect the baseball
 		private IntPtr gameWindowHandle; // Store the handle of the game window
 
 		[DllImport("user32.dll", SetLastError = true)]
@@ -163,6 +163,14 @@ namespace AutoHit
 			this.lblClickCount.TabIndex = 5;
 			this.lblClickCount.Text = "Number of clicks: 0";
 
+			this.lblPitchDetected = new System.Windows.Forms.Label();
+			this.lblPitchDetected.AutoSize = true;
+			this.lblPitchDetected.Location = new System.Drawing.Point(12, 170);
+			this.lblPitchDetected.Name = "lblPitchDetected";
+			this.lblPitchDetected.Size = new System.Drawing.Size(85, 13);
+			this.lblPitchDetected.TabIndex = 6;
+			this.lblPitchDetected.Text = "";  // Start empty
+
 			// 
 			// MainForm
 			// 
@@ -175,6 +183,7 @@ namespace AutoHit
 			this.Controls.Add(this.pictureBox);
 			this.Controls.Add(this.lblPictureTracking);
 			this.Controls.Add(this.lblClickCount);  // Add click count label to form
+			this.Controls.Add(this.lblPitchDetected);
 			this.Name = "MainForm";
 			this.Text = "Screen Watcher";
 			this.ResumeLayout(false);
@@ -186,10 +195,11 @@ namespace AutoHit
 
 			// Define the watched area (smaller region within the screen)
 			Rectangle bounds = Screen.PrimaryScreen.Bounds;
-			watchArea = new Rectangle(bounds.Width / 2 - 150, bounds.Height / 2 - 150, 300, 300);  // Watched area
+			//watchArea = new Rectangle(bounds.Width / 2 - 90, bounds.Height / 2 - 90, 180, 180);  // Watched area
+			watchArea = new Rectangle(bounds.Width / 2 - 150, bounds.Height / 2 - 150, 300, 300);
 
 			cooldownTimer = new Timer();
-			cooldownTimer.Interval = 4000;  // Set to 4 seconds (adjust as needed)
+			cooldownTimer.Interval = 5000;  // Set to 4 seconds (adjust as needed)
 			cooldownTimer.Tick += CooldownTimer_Tick;  // Event handler for when the cooldown ends
 		}
 
@@ -218,78 +228,40 @@ namespace AutoHit
 
 		private void ScreenWatcher_Tick(object sender, EventArgs e)
 		{
-			// Check if cooldown is active, if so, skip this cycle
-			if (isCooldownActive)
-			{
-				lblStatus.Text = "Cooldown in progress...";
-				return;  // Skip further processing if cooldown is active
-			}
+			if (isCooldownActive) return;  // Skip if cooldown is active
 
-			// Capture the screen
 			Bitmap screenCapture = CaptureScreen();
-
-			// Display the captured screen in the PictureBox (for visualization)
-			pictureBox.Image = screenCapture;  // Display the captured screen
-
-			// If clicks are not allowed, continue to display the red dot at the last known position
-			if (lastClickX != -1 && lastClickY != -1)
-			{
-				using (Graphics g = Graphics.FromImage(screenCapture))
-				{
-					// Redraw the red dot at the last click location
-					g.FillEllipse(Brushes.Red, lastClickX - 5, lastClickY - 5, 10, 10);
-				}
-
-				// Update the PictureBox with the updated screen
-				pictureBox.Image = screenCapture;
-				pictureBox.Refresh();
-			}
+			pictureBox.Image = screenCapture;
 
 			if (isAutoHitEnabled)
 			{
-				// Crop the screen capture to the watched area
 				Bitmap croppedScreen = CropBitmap(screenCapture, watchArea);
-
-				// Convert Bitmap to Image<Bgr, byte> for Emgu CV processing
 				Image<Bgr, byte> currentFrame = BitmapToImage(croppedScreen);
 
-				// Step 1: Detect motion
 				if (prevFrame != null)
 				{
-					// Convert both prevFrame and currentFrame to grayscale
 					Image<Gray, byte> grayPrevFrame = prevFrame.Convert<Gray, byte>();
 					Image<Gray, byte> grayCurrentFrame = currentFrame.Convert<Gray, byte>();
-
-					// Calculate the difference between the grayscale frames
 					Image<Gray, byte> motion = grayPrevFrame.AbsDiff(grayCurrentFrame);
+					motion = motion.ThresholdBinary(new Gray(20), new Gray(255));
 
-					// Threshold the motion to remove noise and detect earlier
-					motion = motion.ThresholdBinary(new Gray(20), new Gray(255)); // More sensitive motion detection
-
-					// Check if motion is detected by calculating the non-zero pixels
 					int motionArea = CvInvoke.CountNonZero(motion);
 
 					if (motionArea > motionThreshold)
 					{
-						// Step 2: Apply color filtering (white ball detection)
 						Image<Hsv, byte> hsvImage = currentFrame.Convert<Hsv, byte>();
-						Image<Gray, byte> whiteMask = hsvImage.InRange(new Hsv(0, 0, 180), new Hsv(180, 30, 255));  // Filter for white
+						Image<Gray, byte> whiteMask = hsvImage.InRange(new Hsv(0, 0, 150), new Hsv(180, 50, 255));
 
-						// Filter out small areas (noise)
-						CvInvoke.Erode(whiteMask, whiteMask, null, new System.Drawing.Point(-1, -1), 2, BorderType.Default, new MCvScalar(0));
-						CvInvoke.Dilate(whiteMask, whiteMask, null, new System.Drawing.Point(-1, -1), 2, BorderType.Default, new MCvScalar(0));
+						CvInvoke.Erode(whiteMask, whiteMask, null, new System.Drawing.Point(-1, -1), 1, BorderType.Default, new MCvScalar(0));  // Reduced to 1 iteration
+						CvInvoke.Dilate(whiteMask, whiteMask, null, new System.Drawing.Point(-1, -1), 1, BorderType.Default, new MCvScalar(0));  // Reduced to 1 iteration
 
-						// Detect if the white area matches the expected baseball size
 						if (CvInvoke.CountNonZero(whiteMask) > minWhiteArea)
 						{
-							// Step 3: Find the bounding box of the white ball
 							using (VectorOfVectorOfPoint contours = new VectorOfVectorOfPoint())
 							{
 								CvInvoke.FindContours(whiteMask, contours, null, RetrType.External, ChainApproxMethod.ChainApproxSimple);
-
 								if (contours.Size > 0)
 								{
-									// Get the largest contour, assuming it's the ball
 									int largestContourIndex = 0;
 									double maxArea = 0;
 
@@ -303,48 +275,36 @@ namespace AutoHit
 										}
 									}
 
-									// Get the bounding box of the largest contour (the white ball)
 									Rectangle boundingBox = CvInvoke.BoundingRectangle(contours[largestContourIndex]);
+									int boundingBoxArea = boundingBox.Width * boundingBox.Height;
 
-									// Calculate the center of the bounding box
-									int centerX = boundingBox.X + boundingBox.Width / 2;
-									int centerY = boundingBox.Y + boundingBox.Height / 2;
+									if (boundingBoxArea > 100)
+										return;
 
-									// Convert to absolute screen position relative to the watched area
-									int absoluteX = watchArea.X + centerX;
-									int absoluteY = watchArea.Y + centerY;
-
-									// Ensure the click location is within bounds of the croppedScreen
-									if (centerX >= 0 && centerX < croppedScreen.Width && centerY >= 0 && centerY < croppedScreen.Height)
+									// Zone 1: Detect motion but no click yet
+									if (boundingBoxArea < 50)  // Adjust threshold for Zone 1
 									{
-										// Simulate the mouse click at the center of the ball
-										SimulateMouseClick(absoluteX, absoluteY, gameWindowHandle);   // Now clicks directly on the ball
+										lblPitchDetected.Text = $"Zone 1 Pitch detected {boundingBoxArea.ToString()}";
+
+									}
+									lblPitchDetected.Text = $"Pitch detected {boundingBoxArea.ToString()}";
+									//Zone 2: middle of path
+									if (boundingBoxArea >=70)  // Adjust threshold for Zone 1
+									{
+										lblPitchDetected.Text = $"Zone 2 Pitch detected {boundingBoxArea.ToString()}";
+										int centerX = boundingBox.X + boundingBox.Width / 2;
+										int centerY = boundingBox.Y + boundingBox.Height / 2;
+										int absoluteX = watchArea.X + centerX;
+										int absoluteY = watchArea.Y + centerY;
+
+										SimulateMouseClick(absoluteX, absoluteY, gameWindowHandle);
 										clickCount++;
 										lblClickCount.Text = $"Number of clicks: {clickCount}";
 
-										// Store the last click position
 										lastClickX = absoluteX;
 										lastClickY = absoluteY;
 
-										// Draw a red dot on the cropped screen
-										using (Graphics g = Graphics.FromImage(croppedScreen))
-										{
-											// Draw a red circle at the click location on the croppedScreen
-											g.FillEllipse(Brushes.Red, centerX - 5, centerY - 5, 50, 50);  // Red dot of size 10x10
-										}
-
-										// Now we copy the cropped screen back into the main screen capture
-										using (Graphics g = Graphics.FromImage(screenCapture))
-										{
-											g.DrawImage(croppedScreen, watchArea);  // Place the modified cropped image back in the original screen capture
-										}
-
-										// Cooldown starts here after the click
 										StartCooldown();
-									}
-									else
-									{
-										Console.WriteLine("Click location is out of bounds.");
 									}
 								}
 							}
@@ -352,14 +312,12 @@ namespace AutoHit
 					}
 				}
 
-				// Store the current frame as the previous frame for the next iteration
 				prevFrame = currentFrame.Copy();
-
-				// Force PictureBox to update with the screen capture that includes the red dot
 				pictureBox.Image = screenCapture;
-				pictureBox.Refresh();  // Force refresh to ensure the dot is visible
+				pictureBox.Refresh();
 			}
 		}
+
 
 		private Image<Bgr, byte> BitmapToImage(Bitmap bitmap)
 		{
@@ -458,7 +416,7 @@ namespace AutoHit
 		{
 			isCooldownActive = false;  // Cooldown is over, allow clicks again
 			cooldownTimer.Stop();  // Stop the cooldown timer
-			lblStatus.Text = "";
+			lblStatus.Text = "Auto Hit Enabled";
 		}
 
 		private System.Windows.Forms.Label lblStatus;
@@ -467,5 +425,6 @@ namespace AutoHit
 		private System.Windows.Forms.PictureBox pictureBox;
 		private System.Windows.Forms.Label lblPictureTracking;
 		private System.Windows.Forms.Label lblClickCount;
+		private Label lblPitchDetected;  // Label to indicate pitch detection
 	}
 }
