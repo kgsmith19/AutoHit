@@ -67,8 +67,10 @@ namespace AutoHit
 				bool isPitchDetected = ballDetection.DetectPitch(croppedScreen, out Point clickPoint);
 
 				if (isPitchDetected)
-				{
+				{ 
 					lblPitchDetected.Text = "Pitch detected";
+					//125 seems to be good timing...
+					System.Threading.Thread.Sleep(125);
 					mouseClicker.SimulateMouseClick(clickPoint.X, clickPoint.Y);
 					clickCount++;
 					lblClickCount.Text = $"Number of clicks: {clickCount}";
