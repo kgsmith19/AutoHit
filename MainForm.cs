@@ -14,17 +14,63 @@ namespace AutoHit
 		private bool isAutoHitEnabled = false;  // Flag for auto-hit functionality
 		private int clickCount = 0;  // Counter for clicks
 		private Timer screenWatcherTimer;
-		private Rectangle watchArea;  // Define the watched area
-		private Image<Bgr, byte> baseballTemplate;  // Store the baseball template for matching
+		private Rectangle watchArea;  // Define the watched areas
 		private Image<Bgr, byte> prevFrame;  // Store the previous frame for motion detection
-		private int motionThreshold = 10;  // Motion detection sensitivity threshold was 50
-		private int minWhiteArea = 10;  // Minimum white area threshold to detect the baseball was 500
+		private int motionThreshold = 10;  // Motion detection sensitivity threshold
+		private int minWhiteArea = 10;  // Minimum white area threshold to detect the baseball
+		private IntPtr gameWindowHandle; // Store the handle of the game window
 
-		[DllImport("user32.dll", CharSet = CharSet.Auto, CallingConvention = CallingConvention.StdCall)]
-		public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint cButtons, uint dwExtraInfo);
+		[DllImport("user32.dll", SetLastError = true)]
+		public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
 
-		private const int MOUSEEVENTF_LEFTDOWN = 0x02;
-		private const int MOUSEEVENTF_LEFTUP = 0x04;
+		[DllImport("user32.dll")]
+		static extern bool SetForegroundWindow(IntPtr hWnd);
+
+		[DllImport("user32.dll")]
+		static extern bool GetWindowRect(IntPtr hWnd, ref RECT rect);
+
+		[StructLayout(LayoutKind.Sequential)]
+		public struct RECT
+		{
+			public int Left;
+			public int Top;
+			public int Right;
+			public int Bottom;
+		}
+
+		[StructLayout(LayoutKind.Sequential)]
+		public struct INPUT
+		{
+			public uint type;
+			public InputUnion u;
+			public static int Size => Marshal.SizeOf(typeof(INPUT));
+		}
+
+		[StructLayout(LayoutKind.Explicit)]
+		public struct InputUnion
+		{
+			[FieldOffset(0)] public MOUSEINPUT mi;
+		}
+
+		[StructLayout(LayoutKind.Sequential)]
+		public struct MOUSEINPUT
+		{
+			public int dx;
+			public int dy;
+			public uint mouseData;
+			public uint dwFlags;
+			public uint time;
+			public IntPtr dwExtraInfo;
+		}
+
+		[DllImport("user32.dll", SetLastError = true)]
+		public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+		private const int INPUT_MOUSE = 0;
+		private const uint MOUSEEVENTF_MOVE = 0x0001;
+		private const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
+		private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+		private const uint MOUSEEVENTF_LEFTUP = 0x0004;
 
 		// Add variables to store the last click position
 		private int lastClickX = -1;
@@ -36,6 +82,14 @@ namespace AutoHit
 		public MainForm()
 		{
 			InitializeComponent();
+
+			// Find the game window handle by window title (replace with your game's window title)
+			gameWindowHandle = FindWindow(null, "Roblox");
+
+			if (gameWindowHandle == IntPtr.Zero)
+			{
+				MessageBox.Show("Could not find the game window. Please make sure the game is running.");
+			}
 		}
 
 		private void InitializeComponent()
@@ -127,18 +181,15 @@ namespace AutoHit
 			this.PerformLayout();
 
 			screenWatcherTimer = new Timer();
-			screenWatcherTimer.Interval = 5; // Adjust as needed was 100
+			screenWatcherTimer.Interval = 5; // Adjust as needed
 			screenWatcherTimer.Tick += ScreenWatcher_Tick;
-
-			// Load the baseball template from the uploaded image file
-			baseballTemplate = new Image<Bgr, byte>(@"C:\\Test.PNG");
 
 			// Define the watched area (smaller region within the screen)
 			Rectangle bounds = Screen.PrimaryScreen.Bounds;
 			watchArea = new Rectangle(bounds.Width / 2 - 150, bounds.Height / 2 - 150, 300, 300);  // Watched area
 
 			cooldownTimer = new Timer();
-			cooldownTimer.Interval = 4000;  // Set to 3 seconds (3000 milliseconds)
+			cooldownTimer.Interval = 4000;  // Set to 4 seconds (adjust as needed)
 			cooldownTimer.Tick += CooldownTimer_Tick;  // Event handler for when the cooldown ends
 		}
 
@@ -267,7 +318,7 @@ namespace AutoHit
 									if (centerX >= 0 && centerX < croppedScreen.Width && centerY >= 0 && centerY < croppedScreen.Height)
 									{
 										// Simulate the mouse click at the center of the ball
-										SimulateMouseClick(absoluteX, absoluteY);   // Now clicks directly on the ball
+										SimulateMouseClick(absoluteX, absoluteY, gameWindowHandle);   // Now clicks directly on the ball
 										clickCount++;
 										lblClickCount.Text = $"Number of clicks: {clickCount}";
 
@@ -335,15 +386,6 @@ namespace AutoHit
 			return croppedBitmap;
 		}
 
-		// Helper method to convert Bitmap to Mat
-		private Mat BitmapToMat(Bitmap bitmap)
-		{
-			Mat mat = new Mat();
-			bitmap.Save("temp.bmp");
-			mat = CvInvoke.Imread("temp.bmp", Emgu.CV.CvEnum.ImreadModes.Color);
-			return mat;
-		}
-
 		private Bitmap CaptureScreen()
 		{
 			// Define the area of the screen you want to capture (full screen in this case)
@@ -368,13 +410,41 @@ namespace AutoHit
 		}
 
 		// Method to simulate mouse clicks
-		private void SimulateMouseClick(int x, int y)
+		private void SimulateMouseClick(int x, int y, IntPtr gameWindowHandle)
 		{
-			// Simulate the mouse click
-			Cursor.Position = new Point(x, y);
-			mouse_event(MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_LEFTUP, (uint)x, (uint)y, 0, 0);
-		}
+			// Bring the game window to the foreground before clicking
+			SetForegroundWindow(gameWindowHandle);
 
+			// Get the game window's position
+			RECT gameWindowRect = new RECT();
+			GetWindowRect(gameWindowHandle, ref gameWindowRect);
+
+			// Calculate the relative position within the game window
+			int relativeX = x - gameWindowRect.Left;
+			int relativeY = y - gameWindowRect.Top;
+
+			// Set up the INPUT structure for moving the mouse and clicking
+			INPUT[] inputs = new INPUT[2];
+
+			// First input for moving the mouse (relative to the game window)
+			inputs[0].type = INPUT_MOUSE;
+			inputs[0].u.mi = new MOUSEINPUT
+			{
+				dx = relativeX * 65535 / (gameWindowRect.Right - gameWindowRect.Left),   // Normalize to 0 - 65535
+				dy = relativeY * 65535 / (gameWindowRect.Bottom - gameWindowRect.Top),  // Normalize to 0 - 65535
+				dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE
+			};
+
+			// Second input for left mouse click (down and up)
+			inputs[1].type = INPUT_MOUSE;
+			inputs[1].u.mi = new MOUSEINPUT
+			{
+				dwFlags = MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_LEFTUP
+			};
+
+			// Send the inputs
+			SendInput((uint)inputs.Length, inputs, INPUT.Size);
+		}
 		private void StartCooldown()
 		{
 			// Set cooldown flag before starting cooldown
@@ -396,6 +466,6 @@ namespace AutoHit
 		private System.Windows.Forms.Button btnStartAutoHit;
 		private System.Windows.Forms.PictureBox pictureBox;
 		private System.Windows.Forms.Label lblPictureTracking;
-		private System.Windows.Forms.Label lblClickCount;  // Label for displaying the number of clicks
+		private System.Windows.Forms.Label lblClickCount;
 	}
 }
